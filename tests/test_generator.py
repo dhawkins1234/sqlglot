@@ -4,6 +4,7 @@ from sqlglot import exp, parse_one
 from sqlglot.expressions import Func
 from sqlglot.parser import Parser
 from sqlglot.tokens import Tokenizer
+from tests.helpers import load_sql_fixture_pairs, string_to_bool
 
 
 class TestGenerator(unittest.TestCase):
@@ -48,3 +49,33 @@ class TestGenerator(unittest.TestCase):
     def test_generate_nested_binary(self):
         sql = "SELECT 'foo'" + (" || 'foo'" * 1000)
         self.assertEqual(parse_one(sql).sql(copy=False), sql)
+
+    def test_align_select_aliases(self):
+        for i, (meta, sql, expected) in enumerate(
+            load_sql_fixture_pairs("align_select_aliases.sql"), start=1
+        ):
+            title = meta.get("title") or f"align_select_aliases_{i}"
+            dialect = meta.get("dialect")
+            leading_comma = string_to_bool(meta.get("leading_comma"))
+            pretty = True if meta.get("pretty") is None else string_to_bool(meta.get("pretty"))
+            max_text_width = meta.get("max_text_width")
+            align_flag = meta.get("align_select_aliases")
+            align_select_aliases = True if align_flag is None else string_to_bool(align_flag)
+
+            kwargs = {
+                "pretty": pretty,
+                "align_select_aliases": align_select_aliases,
+            }
+
+            if leading_comma:
+                kwargs["leading_comma"] = True
+            if max_text_width:
+                kwargs["max_text_width"] = int(max_text_width)
+            if dialect:
+                kwargs["dialect"] = dialect
+
+            with self.subTest(title):
+                self.assertEqual(
+                    expected,
+                    parse_one(sql, read=dialect).sql(**kwargs),
+                )

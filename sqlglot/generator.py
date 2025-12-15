@@ -108,6 +108,9 @@ class Generator(metaclass=_Generator):
             Default: 80
         comments: Whether to preserve comments in the output SQL code.
             Default: True
+        align_select_aliases: Whether to align `AS` keywords in SELECT projection lists when in pretty mode.
+            This aligns aliases within each SELECT/CTE separately, padding only the last line of multiline expressions.
+            Default: False
     """
 
     TRANSFORMS: t.Dict[t.Type[exp.Expression], t.Callable[..., str]] = {
@@ -726,6 +729,7 @@ class Generator(metaclass=_Generator):
         "leading_comma",
         "max_text_width",
         "comments",
+        "align_select_aliases",
         "dialect",
         "unsupported_messages",
         "_escaped_quote_end",
@@ -750,6 +754,7 @@ class Generator(metaclass=_Generator):
         leading_comma: bool = False,
         max_text_width: int = 80,
         comments: bool = True,
+        align_select_aliases: bool = False,
         dialect: DialectType = None,
     ):
         import sqlglot
@@ -765,6 +770,7 @@ class Generator(metaclass=_Generator):
         self.leading_comma = leading_comma
         self.max_text_width = max_text_width
         self.comments = comments
+        self.align_select_aliases = align_select_aliases
         self.dialect = Dialect.get_or_raise(dialect)
 
         # This is both a Dialect property and a Generator argument, so we prioritize the latter
@@ -4057,6 +4063,17 @@ class Generator(metaclass=_Generator):
         else:
             result_sql = "".join(result_sqls)
 
+        # Align AS keywords after all other formatting is done
+        should_align = (
+            self.pretty
+            and self.align_select_aliases
+            and isinstance(expression, exp.Select)
+            and (key or "expressions") == "expressions"
+        )
+
+        if should_align and self.pretty and result_sql:
+            result_sql = self._align_as_keywords(result_sql)
+
         return (
             self.indent(result_sql, skip_first=skip_first, skip_last=skip_last)
             if indent
@@ -4641,6 +4658,48 @@ class Generator(metaclass=_Generator):
         if self.pretty:
             return string.replace("\n", self.SENTINEL_LINE_BREAK)
         return string
+
+    def _align_as_keywords(self, sql: str) -> str:
+        """Align AS keywords in SELECT expressions by padding to the maximum AS position."""
+        tokens = self.dialect.tokenizer().tokenize(sql)
+        lines = sql.split("\n")
+        
+        # Build cumulative line start positions
+        line_starts = [0]
+        for line in lines:
+            line_starts.append(line_starts[-1] + len(line) + 1)
+        
+        # Find AS token positions (line_num -> start_col, 1-indexed)
+        as_positions: t.Dict[int, t.List[int]] = {}
+        for token in tokens:
+            if token.token_type == TokenType.ALIAS and token.line <= len(lines):
+                line_num = token.line
+                start_col = token.start - line_starts[line_num - 1] + 1
+                as_positions.setdefault(line_num, []).append(start_col)
+        
+        if not as_positions:
+            return sql
+        
+        # Find max AS column position
+        max_col = max(max(cols) for cols in as_positions.values())
+        
+        # Align lines with AS keywords
+        aligned = []
+        for i, line in enumerate(lines):
+            line_num = i + 1
+            if line_num in as_positions:
+                start_col = as_positions[line_num][0]
+                before_as = line[:start_col-1].rstrip()
+                after_as = line[start_col-1:]
+                padding_needed = max_col - len(before_as) - 1
+                if padding_needed > 0:
+                    aligned.append(before_as + " " * padding_needed + after_as)
+                else:
+                    aligned.append(line)
+            else:
+                aligned.append(line)
+        
+        return "\n".join(aligned)
 
     def copyparameter_sql(self, expression: exp.CopyParameter) -> str:
         option = self.sql(expression, "this")
